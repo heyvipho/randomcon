@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"strconv"
 	"time"
 
 	"gopkg.in/tucnak/telebot.v2"
@@ -12,7 +13,7 @@ type TB struct {
 }
 
 func CreateTB() TB {
-	b, err := telebot.NewBot(telebot.Settings{
+	tb, err := telebot.NewBot(telebot.Settings{
 		// You can also set custom API URL.
 		// If field is empty it equals to "https://api.telegram.org".
 		// URL: "http://195.129.111.17:8012",
@@ -26,28 +27,38 @@ func CreateTB() TB {
 	}
 
 	return TB{
-		i: b,
+		i: tb,
 	}
 }
 
-func (b *TB) Start() {
-	b.i.Handle("/start", func(m *telebot.Message) {
+func (tb *TB) Start() {
+	tb.i.Handle("/start", func(m *telebot.Message) {
 		_, err := db.InitUser(*m.Sender)
 		if err != nil {
 			log.Fatal(err)
 		}
-		b.SendMarkdown(m.Sender, c.TBM.Start)
+		tb.SendMarkdown(m.Sender, c.TBM.Start)
 		log.Println(m.Sender.Recipient())
 	})
 
-	// b.i.Handle("/search", func(m *telebot.Message) {
-	// 	u, err := db.InitUser(*m.Sender)
-	// 	if err != nil {
-	// 		log.Fatal(err)
-	// 	}
+	tb.i.Handle("/search", func(m *telebot.Message) {
+		user, err := db.InitUser(*m.Sender)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-	// 	b.SendMarkdown(m.Sender, c.TBM.Start)
-	// })
+		if err := db.Search(user); err != nil {
+			if err != ErrDBSearchAlreadyStarted {
+				log.Fatal(err)
+			}
+
+			tb.SendMarkdown(m.Sender, "Поиск уже начат.")
+		} else {
+			tb.SendMarkdown(m.Sender, "Начинаю искать...")
+		}
+
+		// b.SendMarkdown(m.Sender, c.TBM.Start)
+	})
 
 	// b.i.Handle("/end", func(m *telebot.Message) {
 	// 	b.SendMarkdown(m.Sender, c.TBM.Start)
@@ -61,27 +72,42 @@ func (b *TB) Start() {
 	// 	b.SendMarkdown(m.Sender, c.TBM.Start)
 	// })
 
-	b.i.Start()
+	tb.i.Start()
 }
 
-func (b *TB) Send(to *telebot.User, m string) {
-	_, err := b.i.Send(to, m)
+func (tb *TB) SearchingComplete(users []string, roomNum []byte) error {
+	for _, userID := range users {
+		id, err := strconv.Atoi(userID)
+		if err != nil {
+			return err
+		}
+
+		user := &telebot.User{ID: id}
+
+		tb.Send(user, "Добро пожаловать в #room"+strconv.FormatUint(bytesToUint64(roomNum), 10))
+	}
+
+	return nil
+}
+
+func (tb *TB) Send(to telebot.Recipient, m string) {
+	_, err := tb.i.Send(to, m)
 
 	if err != nil {
 		log.Println(err)
 	}
 }
 
-func (b *TB) SendMarkdown(to *telebot.User, m string) {
-	_, err := b.i.Send(to, m, telebot.ModeMarkdown)
+func (b *TB) SendMarkdown(to telebot.Recipient, m string) {
+	_, err := tb.i.Send(to, m, telebot.ModeMarkdown)
 
 	if err != nil {
 		log.Println(err)
 	}
 }
 
-func (b *TB) SendHTML(to *telebot.User, m string) {
-	_, err := b.i.Send(to, m, telebot.ModeHTML)
+func (b *TB) SendHTML(to telebot.Recipient, m string) {
+	_, err := tb.i.Send(to, m, telebot.ModeHTML)
 
 	if err != nil {
 		log.Println(err)

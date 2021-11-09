@@ -9,7 +9,7 @@ type DBUser struct {
 }
 
 type DBRoom struct {
-	users []string
+	Users []string
 }
 
 type DBSearch []string
