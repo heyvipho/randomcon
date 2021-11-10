@@ -9,52 +9,71 @@ import (
 )
 
 type TB struct {
-	i *telebot.Bot
+	i  *telebot.Bot
+	c  *Config
+	db *DB
 }
 
-func CreateTB() TB {
-	tb, err := telebot.NewBot(telebot.Settings{
+func CreateTB(config *Config, db *DB) (*TB, error) {
+	i, err := telebot.NewBot(telebot.Settings{
 		// You can also set custom API URL.
 		// If field is empty it equals to "https://api.telegram.org".
 		// URL: "http://195.129.111.17:8012",
 
-		Token:  c.TBToken,
+		Token:  config.TBToken,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
 	})
 
-	if err != nil {
-		log.Panic(err)
+	tb := TB{
+		i:  i,
+		c:  config,
+		db: db,
 	}
 
-	return TB{
-		i: tb,
-	}
+	return &tb, err
 }
 
 func (tb *TB) Start() {
 	tb.i.Handle("/start", func(m *telebot.Message) {
-		_, err := db.InitUser(*m.Sender)
+		_, err := tb.db.GetUser(m.Sender.ID)
 		if err != nil {
 			log.Fatal(err)
 		}
-		tb.SendMarkdown(m.Sender, c.TBM.Start)
+		tb.SendMarkdown(m.Sender, tb.c.TBM.Start)
 		log.Println(m.Sender.Recipient())
 	})
 
 	tb.i.Handle("/search", func(m *telebot.Message) {
-		user, err := db.InitUser(*m.Sender)
+		user, err := tb.db.GetUser(m.Sender.ID)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		if err := db.Search(user); err != nil {
+		findedUsers, err := tb.db.Search(user)
+		if err != nil {
 			if err != ErrDBSearchAlreadyStarted {
 				log.Fatal(err)
 			}
 
 			tb.SendMarkdown(m.Sender, "Поиск уже начат.")
-		} else {
-			tb.SendMarkdown(m.Sender, "Начинаю искать...")
+
+			return
+		}
+
+		tb.SendMarkdown(m.Sender, "Начинаю искать...")
+
+		if len(findedUsers) > 0 {
+			users := append(findedUsers, user.ID)
+
+			roomNum, err := tb.db.AddRoom(users)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			for _, userID := range users {
+				user := &telebot.User{ID: userID}
+				tb.Send(user, "Добро пожаловать в #room"+strconv.FormatUint(roomNum, 10))
+			}
 		}
 
 		// b.SendMarkdown(m.Sender, c.TBM.Start)
@@ -75,21 +94,6 @@ func (tb *TB) Start() {
 	tb.i.Start()
 }
 
-func (tb *TB) SearchingComplete(users []string, roomNum []byte) error {
-	for _, userID := range users {
-		id, err := strconv.Atoi(userID)
-		if err != nil {
-			return err
-		}
-
-		user := &telebot.User{ID: id}
-
-		tb.Send(user, "Добро пожаловать в #room"+strconv.FormatUint(bytesToUint64(roomNum), 10))
-	}
-
-	return nil
-}
-
 func (tb *TB) Send(to telebot.Recipient, m string) {
 	_, err := tb.i.Send(to, m)
 
@@ -98,7 +102,7 @@ func (tb *TB) Send(to telebot.Recipient, m string) {
 	}
 }
 
-func (b *TB) SendMarkdown(to telebot.Recipient, m string) {
+func (tb *TB) SendMarkdown(to telebot.Recipient, m string) {
 	_, err := tb.i.Send(to, m, telebot.ModeMarkdown)
 
 	if err != nil {
@@ -106,7 +110,7 @@ func (b *TB) SendMarkdown(to telebot.Recipient, m string) {
 	}
 }
 
-func (b *TB) SendHTML(to telebot.Recipient, m string) {
+func (tb *TB) SendHTML(to telebot.Recipient, m string) {
 	_, err := tb.i.Send(to, m, telebot.ModeHTML)
 
 	if err != nil {

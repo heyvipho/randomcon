@@ -1,7 +1,7 @@
 # Create custom.yml for changes
 
 TBToken: 620818729:AAEKNhnctSqBYvxlUx_0KGfXe302bJ_A-UE
-DBPath: db
+DataPath: data
 
 TBM:
   Start: "_

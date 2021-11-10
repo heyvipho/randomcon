@@ -2,14 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/gob"
-	"log"
+	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v3"
-	"gopkg.in/tucnak/telebot.v2"
 )
 
 var DBPrefixes = struct {
@@ -25,404 +26,335 @@ var DBPrefixes = struct {
 }
 
 type DB struct {
-	i         *badger.DB
-	RoomCount chan []byte
+	i        *badger.DB
+	c        *Config
+	muRoom   sync.Mutex
+	muSearch sync.Mutex
 }
 
-func CreateDB() DB {
-	db, err := badger.Open(badger.DefaultOptions(c.DBPath))
+func CreateDB(config *Config) (*DB, error) {
+	db, err := badger.Open(badger.DefaultOptions(path.Join(config.DataPath, "db")))
 	if err != nil {
-		log.Panic(err)
+		return &DB{}, err
 	}
 
 	s := DB{
-		i:         db,
-		RoomCount: make(chan []byte),
+		i: db,
+		c: config,
 	}
 
-	if err := s.InitSearch(); err != nil {
-		log.Panic(err)
-	}
+	err = s.initSearch()
 
-	go s.RoomIncrement()
-
-	return s
+	return &s, err
 }
 
-func (db *DB) InitSearch() error {
-	err := db.i.Update(func(txn *badger.Txn) error {
-		key := []byte(DBPrefixes.Search)
-
-		_, err := db.Get(txn, key)
-
-		if err != nil {
-			if err != badger.ErrKeyNotFound {
-				return err
-			}
-
-			if err := db.Set(txn, key, DBSearch{}); err != nil {
-				return err
-			}
+func (db *DB) initSearch() error {
+	_, err := db.getSearch()
+	if err != nil {
+		if err != badger.ErrKeyNotFound {
+			return err
 		}
 
-		return nil
-	})
+		if err := db.setSearch(DBSearch{}); err != nil {
+			return err
+		}
+	}
 
-	return err
+	return nil
 }
 
 func (db *DB) IsSearching(u DBUser) (bool, error) {
-	yes := false
-
-	err := db.i.View(func(txn *badger.Txn) error {
-		key := []byte(DBPrefixes.Search)
-
-		b, err := db.Get(txn, key)
-		if err != nil {
-			return err
-		}
-
-		search, err := db.BytesToSearch(b)
-		if err != nil {
-			return err
-		}
-
-		index := indexOfString(search, u.TBUser.Recipient())
-
-		if index != -1 {
-			yes = true
-		}
-
-		return nil
-	})
-
-	return yes, err
-}
-
-func (db *DB) Search(user DBUser) error {
-	err := db.i.Update(func(txn *badger.Txn) error {
-		key := []byte(DBPrefixes.Search)
-
-		b, err := db.Get(txn, key)
-		if err != nil {
-			return err
-		}
-
-		search, err := db.BytesToSearch(b)
-		if err != nil {
-			return err
-		}
-
-		yes, err := db.IsSearching(user)
-		if err != nil {
-			return err
-		}
-
-		if yes {
-			return ErrDBSearchAlreadyStarted
-		}
-
-		if len(search) > 0 {
-			return db.AddRoom(user.TBUser.Recipient(), search[0])
-		}
-
-		search = append(search, user.TBUser.Recipient())
-
-		if err := db.Set(txn, key, search); err != nil {
-			return err
-		}
-
-		return nil
-	})
-
-	return err
-}
-
-func (db *DB) UnSearch(user DBUser) error {
-	err := db.i.Update(func(txn *badger.Txn) error {
-		key := []byte(DBPrefixes.Search)
-
-		b, err := db.Get(txn, key)
-		if err != nil {
-			return err
-		}
-
-		search, err := db.BytesToSearch(b)
-		if err != nil {
-			return err
-		}
-
-		index := indexOfString(search, user.TBUser.Recipient())
-
-		if index == -1 {
-			return nil
-		}
-
-		search = append(search[:index], search[index+1:]...)
-
-		if err := db.Set(txn, key, search); err != nil {
-			return err
-		}
-
-		return nil
-	})
-
-	return err
-}
-
-func (db *DB) BytesToSearch(b []byte) (DBSearch, error) {
-	var s DBSearch
-	dec := gob.NewDecoder(bytes.NewBuffer(b))
-	if err := dec.Decode(&s); err != nil {
-		return s, err
-	}
-	return s, nil
-}
-
-func (db *DB) AddRoom(users ...string) error {
-	err := db.i.Update(func(txn *badger.Txn) error {
-		roomNum := <-db.RoomCount
-
-		key := db.P(DBPrefixes.Room, strconv.FormatUint(bytesToUint64(roomNum), 10))
-
-		for _, v := range users {
-			ukey := db.P(DBPrefixes.User, v)
-
-			b, err := db.Get(txn, ukey)
-			if err != nil {
-				return err
-			}
-
-			user, err := db.BytesToUser(b)
-			if err != nil {
-				return err
-			}
-
-			if len(user.CurrentRoom) > 0 {
-				rkey := db.P(DBPrefixes.Room, strconv.FormatUint(bytesToUint64(user.CurrentRoom), 10))
-				if err := db.DelRoom(rkey); err != nil && err != badger.ErrKeyNotFound {
-					return err
-				}
-			}
-
-			user.CurrentRoom = roomNum
-
-			if err := db.Set(txn, ukey, user); err != nil {
-				return err
-			}
-		}
-
-		room := DBRoom{
-			Users: users,
-		}
-		if err := db.Set(txn, key, room); err != nil {
-			return err
-		}
-
-		if err := tb.SearchingComplete(users, roomNum); err != nil {
-			return err
-		}
-
-		return nil
-	})
-
-	return err
-}
-
-func (db *DB) BytesToRoom(b []byte) (DBRoom, error) {
-	var s DBRoom
-	dec := gob.NewDecoder(bytes.NewBuffer(b))
-	if err := dec.Decode(&s); err != nil {
-		return s, err
-	}
-	return s, nil
-}
-
-func (db *DB) DelRoom(rkey []byte) error {
-	err := db.i.Update(func(txn *badger.Txn) error {
-		b, err := db.Get(txn, rkey)
-		if err != nil {
-			return err
-		}
-
-		room, err := db.BytesToRoom(b)
-		if err != nil {
-			return err
-		}
-
-		if err := txn.Delete(rkey); err != nil {
-			return err
-		}
-
-		for _, v := range room.Users {
-			ukey := db.P(DBPrefixes.User, v)
-
-			b, err := db.Get(txn, ukey)
-			if err != nil {
-				return err
-			}
-
-			user, err := db.BytesToUser(b)
-			if err != nil {
-				return err
-			}
-
-			user.CurrentRoom = nil
-
-			if err := db.Set(txn, ukey, user); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	})
-
-	return err
-}
-
-func (db *DB) InitUser(tbUser telebot.User) (DBUser, error) {
-	var user DBUser
-
-	err := db.i.Update(func(txn *badger.Txn) error {
-		key := db.P(DBPrefixes.User, tbUser.Recipient())
-		b, err := db.Get(txn, key)
-
-		if err != nil {
-			if err != badger.ErrKeyNotFound {
-				return err
-			}
-
-			newb, err := db.StructToBytes(DBUser{TBUser: tbUser})
-			if err != nil {
-				return err
-			}
-
-			if err := txn.Set(key, newb); err != nil {
-				return err
-			}
-
-			b, err = db.Get(txn, key)
-			if err != nil {
-				return err
-			}
-		}
-
-		user, err = db.BytesToUser(b)
-
-		return err
-	})
-
+	s, err := db.getSearch()
 	if err != nil {
-		return user, err
+		return false, err
 	}
 
-	return user, nil
-}
+	index := db.indexOfInt(s, u.ID)
 
-func (db *DB) BytesToUser(b []byte) (DBUser, error) {
-	var s DBUser
-	dec := gob.NewDecoder(bytes.NewBuffer(b))
-	if err := dec.Decode(&s); err != nil {
-		return s, err
+	if index == -1 {
+		return false, nil
 	}
-	return s, nil
+
+	return true, nil
 }
 
-func (db *DB) StructToBytes(s interface{}) ([]byte, error) {
-	var buff bytes.Buffer
-	enc := gob.NewEncoder(&buff)
-	if err := enc.Encode(s); err != nil {
-		return []byte{}, err
-	}
-	return buff.Bytes(), nil
-}
+func (db *DB) Search(u DBUser) ([]int, error) {
+	db.muSearch.Lock()
+	defer db.muSearch.Unlock()
 
-func (db *DB) Get(txn *badger.Txn, key []byte) ([]byte, error) {
-	item, err := txn.Get(key)
+	users := []int{}
+
+	s, err := db.getSearch()
 	if err != nil {
-		return []byte{}, err
+		return users, err
 	}
 
-	b, err := item.ValueCopy(nil)
+	yes, err := db.IsSearching(u)
 	if err != nil {
-		return []byte{}, err
+		return users, err
 	}
 
-	return b, nil
+	if yes {
+		return users, ErrDBSearchAlreadyStarted
+	}
+
+	if len(s) > 0 {
+		users = s[:1]
+
+		s = s[1:]
+
+		err := db.setSearch(s)
+
+		return users, err
+	} else {
+		s = append(s, u.ID)
+
+		if err := db.setSearch(s); err != nil {
+			return users, err
+		}
+	}
+
+	return users, nil
 }
 
-func (db *DB) Set(txn *badger.Txn, key []byte, s interface{}) error {
-	b, err := db.StructToBytes(s)
+func (db *DB) UnSearch(u DBUser) error {
+	db.muSearch.Lock()
+	defer db.muSearch.Unlock()
+
+	s, err := db.getSearch()
 	if err != nil {
 		return err
 	}
 
-	if err := txn.Set(key, b); err != nil {
+	index := db.indexOfInt(s, u.ID)
+
+	if index == -1 {
+		return nil
+	}
+
+	s = append(s[:index], s[index+1:]...)
+
+	if err := db.setSearch(s); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// func (db *DB) Set(k []byte, v []byte) error {
-// 	// Start a writable transaction.
-// 	txn := db.i.NewTransaction(true)
-// 	defer txn.Discard()
+func (db *DB) setSearch(s DBSearch) error {
+	var b bytes.Buffer
+	enc := gob.NewEncoder(&b)
+	if err := enc.Encode(s); err != nil {
+		return err
+	}
+	key := []byte(DBPrefixes.Search)
+	if err := db.set(key, b.Bytes()); err != nil {
+		return err
+	}
+	return nil
+}
 
-// 	// Use the transaction...
-// 	err := txn.Set(k, v)
-// 	if err != nil {
-// 		return err
-// 	}
+func (db *DB) getSearch() (DBSearch, error) {
+	key := []byte(DBPrefixes.Search)
+	var s DBSearch
+	b, err := db.get(key)
+	if err != nil {
+		return s, err
+	}
+	dec := gob.NewDecoder(bytes.NewBuffer(b))
+	if err := dec.Decode(&s); err != nil {
+		return s, err
+	}
+	return s, nil
+}
 
-// 	// Commit the transaction and check for error.
-// 	if err := txn.Commit(); err != nil {
-// 		return err
-// 	}
+func (db *DB) AddRoom(users []int) (uint64, error) {
+	db.muRoom.Lock()
+	defer db.muRoom.Unlock()
 
-// 	return nil
-// }
+	roomNum, err := db.roomIncrement()
+	if err != nil {
+		return 0, err
+	}
 
-// func (db *DB) Get(k []byte) ([]byte, error) {
-// 	txn := db.i.NewTransaction(true)
-// 	defer txn.Discard()
+	rkey := db.p(DBPrefixes.Room, strconv.FormatUint(db.bytesToUint64(roomNum), 10))
 
-// 	item, err := txn.Get(k)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+	for _, v := range users {
+		ukey := db.p(DBPrefixes.User, strconv.Itoa(v))
 
-// 	v, err := item.ValueCopy(nil)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+		u, err := db.getUser(ukey)
+		if err != nil {
+			return 0, err
+		}
 
-// 	if err := txn.Commit(); err != nil {
-// 		return nil, err
-// 	}
+		if len(u.CurrentRoom) > 0 {
+			rkey := db.p(DBPrefixes.Room, strconv.FormatUint(db.bytesToUint64(u.CurrentRoom), 10))
+			if err := db.delRoom(rkey); err != nil && err != badger.ErrKeyNotFound {
+				return 0, err
+			}
+		}
 
-// 	return v, nil
-// }
+		u.CurrentRoom = roomNum
 
-// func (db *DB) Del(k []byte) error {
-// 	txn := db.i.NewTransaction(true)
-// 	defer txn.Discard()
+		if err := db.setUser(ukey, u); err != nil {
+			return 0, err
+		}
 
-// 	err := txn.Delete(k)
-// 	if err != nil {
-// 		return err
-// 	}
+		if err := db.UnSearch(u); err != nil {
+			return 0, err
+		}
+	}
 
-// 	if err := txn.Commit(); err != nil {
-// 		return err
-// 	}
+	room := DBRoom{
+		Users: users,
+	}
+	if err := db.setRoom(rkey, room); err != nil {
+		return 0, err
+	}
 
-// 	return nil
-// }
+	return db.bytesToUint64(roomNum), nil
+}
 
-func (db *DB) RoomIncrement() {
+func (db *DB) setRoom(k []byte, s DBRoom) error {
+	var b bytes.Buffer
+	enc := gob.NewEncoder(&b)
+	if err := enc.Encode(s); err != nil {
+		return err
+	}
+	if err := db.set(k, b.Bytes()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (db *DB) getRoom(k []byte) (DBRoom, error) {
+	var s DBRoom
+	b, err := db.get(k)
+	if err != nil {
+		return s, err
+	}
+	dec := gob.NewDecoder(bytes.NewBuffer(b))
+	if err := dec.Decode(&s); err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
+func (db *DB) delRoom(k []byte) error {
+	room, err := db.getRoom(k)
+	if err != nil {
+		return err
+	}
+
+	if err := db.del(k); err != nil {
+		return err
+	}
+
+	for _, v := range room.Users {
+		key := db.p(DBPrefixes.User, strconv.Itoa(v))
+
+		u, err := db.getUser(key)
+		if err != nil {
+			return err
+		}
+
+		u.CurrentRoom = nil
+
+		if err := db.setUser(key, u); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (db *DB) GetUser(uID int) (DBUser, error) {
+	key := db.p(DBPrefixes.User, strconv.Itoa(uID))
+	s, err := db.getUser(key)
+	if err != nil {
+		if err != badger.ErrKeyNotFound {
+			return s, err
+		}
+
+		if err := db.setUser(key, DBUser{ID: uID}); err != nil {
+			return s, err
+		}
+
+		s, err = db.getUser(key)
+		if err != nil {
+			return s, err
+		}
+	}
+	return s, nil
+}
+
+func (db *DB) setUser(k []byte, s DBUser) error {
+	var b bytes.Buffer
+	enc := gob.NewEncoder(&b)
+	if err := enc.Encode(s); err != nil {
+		return err
+	}
+	if err := db.set(k, b.Bytes()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (db *DB) getUser(key []byte) (DBUser, error) {
+	var s DBUser
+	b, err := db.get(key)
+	if err != nil {
+		return s, err
+	}
+	dec := gob.NewDecoder(bytes.NewBuffer(b))
+	if err := dec.Decode(&s); err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
+func (db *DB) set(k []byte, v []byte) error {
+	err := db.i.Update(func(txn *badger.Txn) error {
+		err := txn.Set(k, v)
+		return err
+	})
+
+	return err
+}
+
+func (db *DB) get(k []byte) ([]byte, error) {
+	var bytes []byte
+
+	err := db.i.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(k)
+		if err != nil {
+			return err
+		}
+
+		v, err := item.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
+		bytes = v
+
+		return err
+	})
+
+	return bytes, err
+}
+
+func (db *DB) del(k []byte) error {
+	err := db.i.Update(func(txn *badger.Txn) error {
+		err := txn.Delete(k)
+		return err
+	})
+
+	return err
+}
+
+func (db *DB) roomIncrement() ([]byte, error) {
 	add := func(existing, new []byte) []byte {
-		return uint64ToBytes(bytesToUint64(existing) + bytesToUint64(new))
+		return db.uint64ToBytes(db.bytesToUint64(existing) + db.bytesToUint64(new))
 	}
 
 	key := []byte(DBPrefixes.RoomCount)
@@ -430,20 +362,36 @@ func (db *DB) RoomIncrement() {
 	m := db.i.GetMergeOperator(key, add, 200*time.Millisecond)
 	defer m.Stop()
 
-	for {
-		m.Add(uint64ToBytes(1))
+	m.Add(db.uint64ToBytes(1))
 
-		res, err := m.Get()
-		if err != nil {
-			log.Fatal(err)
-		}
-		db.RoomCount <- res
-	}
+	res, err := m.Get()
+
+	return res, err
 }
 
-func (db *DB) P(s ...string) []byte {
+func (db *DB) p(s ...string) []byte {
 	strings.Join(s, "-")
 	return []byte(strings.Join(s, "-"))
+}
+
+func (db *DB) uint64ToBytes(i uint64) []byte {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], i)
+	return buf[:]
+}
+
+func (db *DB) bytesToUint64(b []byte) uint64 {
+	return binary.BigEndian.Uint64(b)
+}
+
+func (db *DB) indexOfInt(s []int, q int) int {
+	for i, v := range s {
+		if v == q {
+			return i
+		}
+	}
+
+	return -1
 }
 
 func (db *DB) Close() {

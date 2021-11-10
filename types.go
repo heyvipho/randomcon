@@ -1,15 +1,13 @@
 package main
 
-import "gopkg.in/tucnak/telebot.v2"
-
 type DBUser struct {
-	TBUser      telebot.User
+	ID          int
 	CurrentRoom []byte
 	// RecentCons  []string
 }
 
 type DBRoom struct {
-	Users []string
+	Users []int
 }
 
-type DBSearch []string
+type DBSearch []int

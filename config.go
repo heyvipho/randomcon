@@ -1,15 +1,13 @@
 package main
 
 import (
-	"log"
-
 	"github.com/gookit/config/v2"
 	"github.com/gookit/config/v2/yaml"
 )
 
 type Config struct {
-	TBToken string
-	DBPath  string
+	TBToken  string
+	DataPath string
 
 	TBM struct {
 		Start string
@@ -17,21 +15,19 @@ type Config struct {
 }
 
 // go run ./examples/demo.go
-func CreateConfig() Config {
+func CreateConfig() (*Config, error) {
+	c := Config{}
+
 	config.WithOptions(config.ParseEnv)
 
 	config.AddDriver(yaml.Driver)
 
 	err := config.LoadExists("default.yml", "custom.yml")
 	if err != nil {
-		log.Panic(err)
+		return &c, err
 	}
 
-	c := Config{}
-	config.BindStruct("", &c)
-	if err != nil {
-		log.Panic(err)
-	}
+	err = config.BindStruct("", &c)
 
-	return c
+	return &c, err
 }
