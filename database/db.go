@@ -1,10 +1,9 @@
-package main
+package database
 
 import (
 	"bytes"
 	"encoding/binary"
 	"encoding/gob"
-	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,20 +26,18 @@ var DBPrefixes = struct {
 
 type DB struct {
 	i        *badger.DB
-	c        *Config
 	muRoom   sync.Mutex
 	muSearch sync.Mutex
 }
 
-func CreateDB(config *Config) (*DB, error) {
-	db, err := badger.Open(badger.DefaultOptions(path.Join(config.DataPath, "db")))
+func CreateDB(path string) (*DB, error) {
+	db, err := badger.Open(badger.DefaultOptions(path))
 	if err != nil {
 		return &DB{}, err
 	}
 
 	s := DB{
 		i: db,
-		c: config,
 	}
 
 	err = s.initSearch()

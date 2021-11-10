@@ -1,6 +1,11 @@
 package main
 
-import "log"
+import (
+	"log"
+	"path"
+
+	"github.com/vipho/randomcon/database"
+)
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
@@ -12,13 +17,13 @@ func main() {
 		log.Panic(err)
 	}
 
-	db, err := CreateDB(c)
+	db, err := database.CreateDB(path.Join(c.DataPath, "db"))
 	if err != nil {
 		log.Panic(err)
 	}
 	defer db.Close()
 
-	tb, err := CreateTB(c, db)
+	tb, err := CreateTB(c.TBToken, &c.TBMessages, db)
 	if err != nil {
 		log.Panic(err)
 	}

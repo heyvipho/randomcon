@@ -9,9 +9,7 @@ type Config struct {
 	TBToken  string
 	DataPath string
 
-	TBM struct {
-		Start string
-	}
+	TBMessages Messages
 }
 
 // go run ./examples/demo.go

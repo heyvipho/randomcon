@@ -1,4 +1,4 @@
-module vipho/randomcon
+module github.com/vipho/randomcon
 
 go 1.17
 

@@ -5,28 +5,29 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/vipho/randomcon/database"
 	"gopkg.in/tucnak/telebot.v2"
 )
 
 type TB struct {
 	i  *telebot.Bot
-	c  *Config
-	db *DB
+	m  *Messages
+	db DB
 }
 
-func CreateTB(config *Config, db *DB) (*TB, error) {
+func CreateTB(token string, messages *Messages, db DB) (*TB, error) {
 	i, err := telebot.NewBot(telebot.Settings{
 		// You can also set custom API URL.
 		// If field is empty it equals to "https://api.telegram.org".
 		// URL: "http://195.129.111.17:8012",
 
-		Token:  config.TBToken,
+		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
 	})
 
 	tb := TB{
 		i:  i,
-		c:  config,
+		m:  messages,
 		db: db,
 	}
 
@@ -39,7 +40,7 @@ func (tb *TB) Start() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		tb.SendMarkdown(m.Sender, tb.c.TBM.Start)
+		tb.SendMarkdown(m.Sender, tb.m.Start)
 		log.Println(m.Sender.Recipient())
 	})
 
@@ -51,7 +52,7 @@ func (tb *TB) Start() {
 
 		findedUsers, err := tb.db.Search(user)
 		if err != nil {
-			if err != ErrDBSearchAlreadyStarted {
+			if err != database.ErrDBSearchAlreadyStarted {
 				log.Fatal(err)
 			}
 
