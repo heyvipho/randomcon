@@ -189,7 +189,7 @@ func (db *DB) AddRoom(users []int) (uint64, error) {
 		}
 
 		if u.CurrentRoom != 0 {
-			if err := db.delRoom(u.CurrentRoom); err != nil && err != badger.ErrKeyNotFound {
+			if _, err := db.DelRoom(u.CurrentRoom); err != nil {
 				return 0, err
 			}
 		}
@@ -242,15 +242,26 @@ func (db *DB) GetRoom(roomNum uint64) (DBRoom, error) {
 	return s, nil
 }
 
-func (db *DB) delRoom(roomNum uint64) error {
+func (db *DB) IsRoomExist(roomNum uint64) (bool, error) {
+	_, err := db.GetRoom(roomNum)
+	if err == badger.ErrKeyNotFound {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (db *DB) DelRoom(roomNum uint64) ([]int, error) {
 	room, err := db.GetRoom(roomNum)
-	if err != nil {
-		return err
+	if err != nil && err != badger.ErrKeyNotFound {
+		return []int{}, err
 	}
 
 	rkey := db.p(DBPrefixes.Room, strconv.FormatUint(roomNum, 10))
 	if err := db.del(rkey); err != nil {
-		return err
+		return []int{}, err
 	}
 
 	for _, v := range room.Users {
@@ -258,17 +269,17 @@ func (db *DB) delRoom(roomNum uint64) error {
 
 		u, err := db.getUser(key)
 		if err != nil {
-			return err
+			return []int{}, err
 		}
 
 		u.CurrentRoom = 0
 
 		if err := db.setUser(key, u); err != nil {
-			return err
+			return []int{}, err
 		}
 	}
 
-	return nil
+	return room.Users, nil
 }
 
 func (db *DB) GetUser(uID int) (DBUser, error) {
