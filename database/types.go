@@ -2,7 +2,7 @@ package database
 
 type DBUser struct {
 	ID          int
-	CurrentRoom []byte
+	CurrentRoom uint64
 	// RecentCons  []string
 }
 

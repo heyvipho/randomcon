@@ -9,10 +9,17 @@ type DB interface {
 	Search(database.DBUser) ([]int, error)
 	UnSearch(database.DBUser) error
 	AddRoom([]int) (uint64, error)
+	GetRoom(uint64) (database.DBRoom, error)
 	GetUser(int) (database.DBUser, error)
 	Close()
 }
 
 type Messages struct {
-	Start string
+	Start                string
+	SearchStarted        string
+	SearchAlreadyStarted string
+	SearchStopped        string
+	RoomWelcome          string
+	RoomNotInside        string
+	MinorError           string
 }

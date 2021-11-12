@@ -12,6 +12,10 @@ import (
 	badger "github.com/dgraph-io/badger/v3"
 )
 
+var (
+	ErrKeyNotFound = badger.ErrKeyNotFound
+)
+
 var DBPrefixes = struct {
 	User      string
 	Search    string
@@ -174,7 +178,7 @@ func (db *DB) AddRoom(users []int) (uint64, error) {
 		return 0, err
 	}
 
-	rkey := db.p(DBPrefixes.Room, strconv.FormatUint(db.bytesToUint64(roomNum), 10))
+	rkey := db.p(DBPrefixes.Room, strconv.FormatUint(roomNum, 10))
 
 	for _, v := range users {
 		ukey := db.p(DBPrefixes.User, strconv.Itoa(v))
@@ -184,9 +188,8 @@ func (db *DB) AddRoom(users []int) (uint64, error) {
 			return 0, err
 		}
 
-		if len(u.CurrentRoom) > 0 {
-			rkey := db.p(DBPrefixes.Room, strconv.FormatUint(db.bytesToUint64(u.CurrentRoom), 10))
-			if err := db.delRoom(rkey); err != nil && err != badger.ErrKeyNotFound {
+		if u.CurrentRoom != 0 {
+			if err := db.delRoom(u.CurrentRoom); err != nil && err != badger.ErrKeyNotFound {
 				return 0, err
 			}
 		}
@@ -209,7 +212,7 @@ func (db *DB) AddRoom(users []int) (uint64, error) {
 		return 0, err
 	}
 
-	return db.bytesToUint64(roomNum), nil
+	return roomNum, nil
 }
 
 func (db *DB) setRoom(k []byte, s DBRoom) error {
@@ -224,9 +227,11 @@ func (db *DB) setRoom(k []byte, s DBRoom) error {
 	return nil
 }
 
-func (db *DB) getRoom(k []byte) (DBRoom, error) {
+func (db *DB) GetRoom(roomNum uint64) (DBRoom, error) {
+	rkey := db.p(DBPrefixes.Room, strconv.FormatUint(roomNum, 10))
+
 	var s DBRoom
-	b, err := db.get(k)
+	b, err := db.get(rkey)
 	if err != nil {
 		return s, err
 	}
@@ -237,13 +242,14 @@ func (db *DB) getRoom(k []byte) (DBRoom, error) {
 	return s, nil
 }
 
-func (db *DB) delRoom(k []byte) error {
-	room, err := db.getRoom(k)
+func (db *DB) delRoom(roomNum uint64) error {
+	room, err := db.GetRoom(roomNum)
 	if err != nil {
 		return err
 	}
 
-	if err := db.del(k); err != nil {
+	rkey := db.p(DBPrefixes.Room, strconv.FormatUint(roomNum, 10))
+	if err := db.del(rkey); err != nil {
 		return err
 	}
 
@@ -255,7 +261,7 @@ func (db *DB) delRoom(k []byte) error {
 			return err
 		}
 
-		u.CurrentRoom = nil
+		u.CurrentRoom = 0
 
 		if err := db.setUser(key, u); err != nil {
 			return err
@@ -349,7 +355,7 @@ func (db *DB) del(k []byte) error {
 	return err
 }
 
-func (db *DB) roomIncrement() ([]byte, error) {
+func (db *DB) roomIncrement() (uint64, error) {
 	add := func(existing, new []byte) []byte {
 		return db.uint64ToBytes(db.bytesToUint64(existing) + db.bytesToUint64(new))
 	}
@@ -363,7 +369,7 @@ func (db *DB) roomIncrement() ([]byte, error) {
 
 	res, err := m.Get()
 
-	return res, err
+	return db.bytesToUint64(res), err
 }
 
 func (db *DB) p(s ...string) []byte {
